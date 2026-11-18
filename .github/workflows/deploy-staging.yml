@@ -1,0 +1,25 @@
+# Nombre que veremos en la pestaña "Actions"
+name: Stage the app
+
+# Define CUÁNDO se ejecuta este workflow
+on:
+
+  # Se ejecutará debido a eventos relacionados con Pull Requests
+  pull_request:
+
+    # Concretamente cuando se añada una etiqueta a la PR
+    types: [labeled]
+
+
+# Trabajos que puede ejecutar el workflow
+jobs:
+
+  # Nombre de nuestro primer trabajo
+  build:
+
+    # GitHub creará una máquina Ubuntu donde ejecutar el trabajo
+    runs-on: ubuntu-latest
+
+    # Solo ejecutamos este trabajo si la PR contiene
+    # una etiqueta llamada exactamente "stage"
+    if: contains(github.event.pull_request.labels.*.name, 'stage')
