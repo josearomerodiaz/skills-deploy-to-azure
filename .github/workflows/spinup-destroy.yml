@@ -1,0 +1,86 @@
+name: Configure Azure environment
+
+# Se activa cuando se añade una label a una Pull Request
+on:
+  pull_request:
+    types: [labeled]
+
+# Variables globales utilizadas por los jobs
+env:
+  IMAGE_REGISTRY_URL: ghcr.io
+  AZURE_RESOURCE_GROUP: cd-with-actions
+  AZURE_APP_PLAN: actions-ttt-deployment
+  AZURE_LOCATION: '"East US"'
+  AZURE_WEBAPP_NAME: josearomerodiaz-ttt-app
+
+jobs:
+
+  # ==========================================================
+  # JOB 1: CREAR EL ENTORNO AZURE
+  # ==========================================================
+  setup-up-azure-resources:
+    runs-on: ubuntu-latest
+
+    # Solo se ejecuta con la label "spin up environment"
+    if: contains(github.event.pull_request.labels.*.name, 'spin up environment')
+
+    steps:
+      # Descarga el repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Inicia sesión en Azure
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Crea el Resource Group
+      - name: Create Azure resource group
+        if: success()
+        run: |
+          az group create --location ${{env.AZURE_LOCATION}} --name ${{env.AZURE_RESOURCE_GROUP}} --subscription ${{secrets.AZURE_SUBSCRIPTION_ID}}
+
+      # Crea el App Service Plan
+      - name: Create Azure app service plan
+        if: success()
+        run: |
+          az appservice plan create --resource-group ${{env.AZURE_RESOURCE_GROUP}} --name ${{env.AZURE_APP_PLAN}} --is-linux --sku F1 --subscription ${{secrets.AZURE_SUBSCRIPTION_ID}}
+
+      # Crea la Web App
+      - name: Create webapp resource
+        if: success()
+        run: |
+          az webapp create --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --plan ${{ env.AZURE_APP_PLAN }} --name ${{ env.AZURE_WEBAPP_NAME }} --deployment-container-image-name nginx --subscription ${{secrets.AZURE_SUBSCRIPTION_ID}}
+
+      # Configura la Web App para obtener imágenes desde GHCR
+      - name: Configure webapp to use GHCR
+        if: success()
+        run: |
+          az webapp config container set --docker-custom-image-name nginx --docker-registry-server-password ${{secrets.CR_PAT}} --docker-registry-server-url https://${{env.IMAGE_REGISTRY_URL}} --docker-registry-server-user ${{github.actor}} --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --subscription ${{secrets.AZURE_SUBSCRIPTION_ID}}
+
+
+  # ==========================================================
+  # JOB 2: DESTRUIR EL ENTORNO AZURE
+  # ==========================================================
+  destroy-azure-resources:
+    runs-on: ubuntu-latest
+
+    # Solo se ejecuta con la label "destroy environment"
+    if: contains(github.event.pull_request.labels.*.name, 'destroy environment')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Inicia sesión en Azure
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Borra el Resource Group y, con él, los recursos contenidos
+      - name: Destroy Azure environment
+        if: success()
+        run: |
+          az group delete --name ${{env.AZURE_RESOURCE_GROUP}} --subscription ${{secrets.AZURE_SUBSCRIPTION_ID}} --yes
