@@ -1,5 +1,5 @@
 # Nombre del workflow
-name: Deploy to staging
+name: Deploy to staging environment
 
 # El workflow reacciona cuando se añade una etiqueta a una Pull Request
 on:
