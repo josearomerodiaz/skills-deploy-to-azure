@@ -1,0 +1,157 @@
+# Nombre del workflow
+name: Deploy to staging
+
+# El workflow reacciona cuando se añade una etiqueta a una Pull Request
+on:
+  pull_request:
+    types: [labeled]
+
+# Variables que utilizaremos en diferentes jobs
+env:
+  # Registro de contenedores de GitHub
+  IMAGE_REGISTRY_URL: ghcr.io
+
+  # Nombre que tendrá nuestra imagen Docker
+  DOCKER_IMAGE_NAME: josearomerodiaz-azure-ttt
+
+  # Nombre que tendría nuestra aplicación en Azure
+  AZURE_WEBAPP_NAME: josearomerodiaz-ttt-app
+
+
+jobs:
+
+  # ============================================================
+  # JOB 1 - CONSTRUIR LA APLICACIÓN
+  # ============================================================
+  build:
+
+    # Solo se ejecuta si la Pull Request tiene la label "stage"
+    if: contains(github.event.pull_request.labels.*.name, 'stage')
+
+    # GitHub crea una máquina Ubuntu temporal para ejecutar el job
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # Descarga el código del repositorio en la máquina Ubuntu
+      - uses: actions/checkout@v4
+
+      # Instala Node.js 16
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 16
+
+      # Instala dependencias y compila la aplicación
+      - name: npm install and build webpack
+        run: |
+          npm install
+          npm run build
+
+      # Guarda el resultado de la compilación como un artifact
+      # para que pueda utilizarlo el siguiente job
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webpack artifacts
+          path: public/
+
+
+  # ============================================================
+  # JOB 2 - CREAR LA IMAGEN DOCKER
+  # ============================================================
+  Build-Docker-Image:
+
+    runs-on: ubuntu-latest
+
+    # No empieza hasta que "build" haya terminado correctamente
+    needs: build
+
+    name: Build image and store in GitHub Container Registry
+
+    steps:
+
+      # Recupera el código del repositorio
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Recupera el artifact que produjo el job "build"
+      - name: Download built artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: webpack artifacts
+          path: public
+
+      # Login en GitHub Container Registry (GHCR)
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY_URL }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      # Genera el nombre/tag de la imagen Docker.
+      # El commit SHA permite identificar exactamente
+      # qué versión del código contiene la imagen.
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{env.IMAGE_REGISTRY_URL}}/${{ github.repository }}/${{env.DOCKER_IMAGE_NAME}}
+          tags: |
+            type=sha,format=long,prefix=
+
+      # Construye la imagen Docker y la publica en GHCR
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+
+  # ============================================================
+  # JOB 3 - DESPLEGAR LA IMAGEN EN AZURE
+  # ============================================================
+  Deploy-to-Azure:
+
+    runs-on: ubuntu-latest
+
+    # Solo comienza cuando la imagen Docker haya sido creada
+    needs: Build-Docker-Image
+
+    name: Deploy app container to Azure
+
+    steps:
+
+      # GitHub Actions inicia sesión en Azure.
+      #
+      # IMPORTANTE:
+      # Nosotros no tenemos AZURE_CREDENTIALS porque hemos
+      # decidido no contratar una suscripción de Azure.
+      - name: "Login via Azure CLI"
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Login en el registro donde está almacenada nuestra imagen
+      - uses: azure/docker-login@v1
+        with:
+          login-server: ${{env.IMAGE_REGISTRY_URL}}
+          username: ${{ github.actor }}
+          password: ${{ secrets.CR_PAT }}
+
+      # Despliega nuestra imagen Docker en Azure Web App
+      - name: Deploy web app container
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{env.AZURE_WEBAPP_NAME}}
+          images: ${{env.IMAGE_REGISTRY_URL}}/${{ github.repository }}/${{env.DOCKER_IMAGE_NAME}}:${{ github.sha }}
+
+      # Cierra y limpia la sesión de Azure
+      - name: Azure logout via Azure CLI
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az logout
+            az cache purge
+            az account clear
